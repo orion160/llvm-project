@@ -1,0 +1,26 @@
+[env]
+OS=Fedora 39
+toolchain=clang-17.0.6
+cmake=3.27.7
+ninja=1.11.1
+git=2.44.0
+ccache=4.8.2
+zstd=1.5.6
+[ccache]
+compression_level=3
+max_size=30G
+[clangd]
+Put this into your user clangd config (Project will issue a warning on untrusted server)
+clangd from many distros do not support external indexing. 
+Use https://github.com/clangd/clangd binaries.
+Also use -log=verbose to check for external indexing usage.
+vscode can install and manage its own version of clangd.
+```yaml
+---
+If:
+  PathMatch: /home/orion/Dev/llvm-project/.*
+Index:
+  External:
+    Server: clangd-index.llvm.org:5900
+    MountPoint: /home/orion/Dev/llvm-project
+```
