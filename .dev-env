@@ -24,3 +24,6 @@ Index:
     Server: clangd-index.llvm.org:5900
     MountPoint: /home/orion/Dev/llvm-project
 ```
+[extra]
+To view targets use cmake --build ./llvm/out/build/linux-dev/ --target help.
+In that way you can cherry pick what to build.
