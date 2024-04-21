@@ -1,4 +1,4 @@
-//===----- COFF_x86_64.cpp - JIT linker implementation for COFF/x86_64 ----===//
+//===----- COFF_arm64.cpp - JIT linker implementation for COFF/arm64 ----===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,14 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// COFF/x86_64 jit-link implementation.
+// COFF/arm64 jit-link implementation.
 //
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ExecutionEngine/JITLink/COFF_arm64.h"
 #include "COFFLinkGraphBuilder.h"
-#include "llvm/BinaryFormat/COFF.h"
 #include "SEHFrameSupport.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/ExecutionEngine/JITLink/aarch64.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/Endian.h"
@@ -115,11 +115,25 @@ private:
       Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr);
       break;
     }
+    case COFF::RelocationTypesARM64::IMAGE_REL_ARM64_BRANCH26: {
+      Kind = EdgeKind_coff_arm64::Branch26;
+      Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr);
+      break;
+    }
     default: {
-      return make_error<JITLinkError>("Unsupported x86_64 relocation:" +
+      return make_error<JITLinkError>("Unsupported arm64 relocation:" +
                                       formatv("{0:d}", Rel.getType()));
     }
     }
+
+    Edge GE(Kind, Offset, *GraphSymbol, Addend);
+    LLVM_DEBUG({
+      dbgs() << "    ";
+      printEdge(dbgs(), BlockToFix, GE, getCOFFARM64RelocationKindName(Kind));
+      dbgs() << "\n";
+    });
+
+    BlockToFix.addEdge(std::move(GE));
 
     return Error::success();
   }
@@ -133,7 +147,7 @@ public:
 
 class COFFLinkGraphLowering_arm64 {
 public:
-  // Lowers COFF arm64 specific edges to generic x86_64 edges.
+  // Lowers COFF arm64 specific edges to generic arm64 edges.
   Error lowerCOFFRelocationEdges(LinkGraph &G, JITLinkContext &Ctx) {
     for (auto *B : G.blocks()) {
       for (auto &E : B->edges()) {
@@ -170,7 +184,14 @@ namespace llvm {
 namespace jitlink {
 
 /// Return the string name of the given COFF ARM64 edge kind.
-const char *getCOFFARM64RelocationKindName(Edge::Kind R) { return "aaa"; }
+const char *getCOFFARM64RelocationKindName(Edge::Kind R) {
+  switch (R) {
+  case Branch26:
+    return "Branch26";
+  default:
+    return aarch64::getEdgeKindName(R);
+  }
+}
 
 Expected<std::unique_ptr<LinkGraph>>
 createLinkGraphFromCOFFObject_arm64(MemoryBufferRef ObjectBuffer) {
