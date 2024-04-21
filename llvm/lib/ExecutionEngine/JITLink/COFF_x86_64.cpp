@@ -166,7 +166,7 @@ private:
       return make_error<JITLinkError>("Unsupported x86_64 relocation:" +
                                       formatv("{0:d}", Rel.getType()));
     }
-    };
+    }
 
     Edge GE(Kind, Offset, *GraphSymbol, Addend);
     LLVM_DEBUG({
@@ -274,7 +274,7 @@ private:
 };
 
 Error lowerEdges_COFF_x86_64(LinkGraph &G, JITLinkContext *Ctx) {
-  LLVM_DEBUG(dbgs() << "Lowering COFF x86_64 edges:\n");
+  LLVM_DEBUG(dbgs() << "Lowering to generic COFF x86_64 edges:\n");
   COFFLinkGraphLowering_x86_64 GraphLowering;
 
   if (auto Err = GraphLowering.lowerCOFFRelocationEdges(G, *Ctx))
