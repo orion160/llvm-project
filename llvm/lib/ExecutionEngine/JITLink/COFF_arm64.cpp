@@ -12,8 +12,11 @@
 
 #include "llvm/ExecutionEngine/JITLink/COFF_arm64.h"
 #include "COFFLinkGraphBuilder.h"
+#include "llvm/BinaryFormat/COFF.h"
+#include "SEHFrameSupport.h"
 #include "llvm/ExecutionEngine/JITLink/aarch64.h"
 #include "llvm/Object/COFF.h"
+#include "llvm/Support/Endian.h"
 
 #define DEBUG_TYPE "jitlink"
 
@@ -22,15 +25,32 @@ using namespace llvm::jitlink;
 
 namespace {
 
-enum EdgeKind_coff_arm64 : Edge::Kind { AAA };
+enum EdgeKind_coff_arm64 : Edge::Kind {
+  Pointer32,
+  Pointer32NB,
+  Branch26,
+  PageBase_Rel21,
+  Rel21,
+  Pageoffset_12L,
+  Secrel,
+  Secrel_Low12A,
+  Secrel_High12A,
+  Secrel_Low12L,
+  Token,
+  Section,
+  Pointer64,
+  Branch19,
+  Branch14,
+  Rel32
+};
 
 class COFFJITLinker_arm64 : public JITLinker<COFFJITLinker_arm64> {
   friend class JITLinker<COFFJITLinker_arm64>;
 
 public:
   COFFJITLinker_arm64(std::unique_ptr<JITLinkContext> Ctx,
-                       std::unique_ptr<LinkGraph> G,
-                       PassConfiguration PassConfig)
+                      std::unique_ptr<LinkGraph> G,
+                      PassConfiguration PassConfig)
       : JITLinker(std::move(Ctx), std::move(G), std::move(PassConfig)) {}
 
 private:
@@ -41,7 +61,68 @@ private:
 
 class COFFLinkGraphBuilder_arm64 : public COFFLinkGraphBuilder {
 private:
-  Error addRelocations() override { return Error::success(); }
+  Error addRelocations() override {
+    LLVM_DEBUG(dbgs() << "Processing relocations:\n");
+
+    for (const auto &RelSect : sections())
+      if (Error Err = COFFLinkGraphBuilder::forEachRelocation(
+              RelSect, this, &COFFLinkGraphBuilder_arm64::addSingleRelocation))
+        return Err;
+
+    return Error::success();
+  }
+
+  Error addSingleRelocation(const object::RelocationRef &Rel,
+                            const object::SectionRef &FixupSect,
+                            Block &BlockToFix) {
+    const object::coff_relocation *COFFRel = getObject().getCOFFRelocation(Rel);
+    auto SymbolIt = Rel.getSymbol();
+    if (SymbolIt == getObject().symbol_end()) {
+      return make_error<StringError>(
+          formatv("Invalid symbol index in relocation entry. "
+                  "index: {0}, section: {1}",
+                  COFFRel->SymbolTableIndex, FixupSect.getIndex()),
+          inconvertibleErrorCode());
+    }
+
+    object::COFFSymbolRef COFFSymbol = getObject().getCOFFSymbol(*SymbolIt);
+    COFFSymbolIndex SymIndex = getObject().getSymbolIndex(COFFSymbol);
+
+    Symbol *GraphSymbol = getGraphSymbol(SymIndex);
+    if (!GraphSymbol)
+      return make_error<StringError>(
+          formatv("Could not find symbol at given index, did you add it to "
+                  "JITSymbolTable? index: {0}, section: {1}",
+                  SymIndex, FixupSect.getIndex()),
+          inconvertibleErrorCode());
+
+    int64_t Addend = 0;
+    orc::ExecutorAddr FixupAddress =
+        orc::ExecutorAddr(FixupSect.getAddress()) + Rel.getOffset();
+    Edge::OffsetT Offset = FixupAddress - BlockToFix.getAddress();
+
+    Edge::Kind Kind = Edge::Invalid;
+    const char *FixupPtr = BlockToFix.getContent().data() + Offset;
+
+    switch (Rel.getType()) {
+    case COFF::RelocationTypesARM64::IMAGE_REL_ARM64_ADDR32: {
+      Kind = EdgeKind_coff_arm64::Pointer32;
+      Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr);
+      break;
+    }
+    case COFF::RelocationTypesARM64::IMAGE_REL_ARM64_ADDR32NB: {
+      Kind = EdgeKind_coff_arm64::Pointer32NB;
+      Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr);
+      break;
+    }
+    default: {
+      return make_error<JITLinkError>("Unsupported x86_64 relocation:" +
+                                      formatv("{0:d}", Rel.getType()));
+    }
+    }
+
+    return Error::success();
+  }
 
 public:
   COFFLinkGraphBuilder_arm64(const object::COFFObjectFile &Obj, const Triple T,
@@ -49,6 +130,40 @@ public:
       : COFFLinkGraphBuilder(Obj, std::move(T), std::move(Features),
                              getCOFFARM64RelocationKindName) {}
 };
+
+class COFFLinkGraphLowering_arm64 {
+public:
+  // Lowers COFF arm64 specific edges to generic x86_64 edges.
+  Error lowerCOFFRelocationEdges(LinkGraph &G, JITLinkContext &Ctx) {
+    for (auto *B : G.blocks()) {
+      for (auto &E : B->edges()) {
+        switch (E.getKind()) {
+        case EdgeKind_coff_arm64::Pointer32: {
+          E.setKind(aarch64::Pointer32);
+          break;
+        }
+        case EdgeKind_coff_arm64::Pointer32NB: {
+          E.setKind(aarch64::Pointer32);
+          break;
+        }
+        default:
+          break;
+        }
+      }
+    }
+    return Error::success();
+  }
+};
+
+Error lowerEdges_COFF_arm64(LinkGraph &G, JITLinkContext *Ctx) {
+  LLVM_DEBUG(dbgs() << "Lowering to generic COFF arm64 edges:\n");
+  COFFLinkGraphLowering_arm64 GraphLowering;
+
+  if (auto Err = GraphLowering.lowerCOFFRelocationEdges(G, *Ctx))
+    return Err;
+
+  return Error::success();
+}
 } // namespace
 
 namespace llvm {
@@ -81,6 +196,17 @@ void link_COFF_arm64(std::unique_ptr<LinkGraph> G,
                      std::unique_ptr<JITLinkContext> Ctx) {
   PassConfiguration Config;
   const Triple &TT = G->getTargetTriple();
+  if (Ctx->shouldAddDefaultTargetPasses(TT)) {
+    // Add a mark-live pass.
+    if (auto MarkLive = Ctx->getMarkLivePass(TT)) {
+      Config.PrePrunePasses.push_back(std::move(MarkLive));
+      Config.PrePrunePasses.push_back(SEHFrameKeepAlivePass(".pdata"));
+    } else
+      Config.PrePrunePasses.push_back(markAllSymbolsLive);
+
+    // Add COFF edge lowering passes.
+    // JITLinkContext *CtxPtr = Ctx.get();
+  }
 
   if (auto Err = Ctx->modifyPassConfig(*G, Config))
     return Ctx->notifyFailed(std::move(Err));
