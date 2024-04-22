@@ -1732,10 +1732,14 @@ static Error addSectCreates(Session &S,
       ExtraSymbols[S.ES.intern(Sym)] = {JITSymbolFlags::Exported, Offset};
     }
 
+
     if (auto Err = JD.define(std::make_unique<SectCreateMaterializationUnit>(
             S.ObjLayer, SectName.str(), MemProt::Read, 16, std::move(*Content),
             std::move(ExtraSymbols))))
       return Err;
+
+    // TODO add more precise debug log
+    LLVM_DEBUG({ dbgs() << "Defined section " << SectName.str(); });
   }
 
   return Error::success();
