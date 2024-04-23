@@ -26,18 +26,18 @@ using namespace llvm::jitlink;
 namespace {
 
 enum EdgeKind_coff_arm64 : Edge::Kind {
-  Pointer32,
+  Pointer32 = aarch64::FirstPlatformRelocation,
   Pointer32NB,
   Branch26,
   PageBase_Rel21,
   Rel21,
-  Pageoffset_12L,
+  PageOffset_12L,
   Secrel,
   Secrel_Low12A,
   Secrel_High12A,
   Secrel_Low12L,
   Token,
-  Section,
+  Sec,
   Pointer64,
   Branch19,
   Branch14,
@@ -72,6 +72,7 @@ private:
     return Error::success();
   }
 
+#pragma optimize("", off)
   Error addSingleRelocation(const object::RelocationRef &Rel,
                             const object::SectionRef &FixupSect,
                             Block &BlockToFix) {
@@ -117,7 +118,27 @@ private:
     }
     case COFF::RelocationTypesARM64::IMAGE_REL_ARM64_BRANCH26: {
       Kind = EdgeKind_coff_arm64::Branch26;
+      Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr) >> 4;
+      break;
+    }
+    case COFF::RelocationTypesARM64::IMAGE_REL_ARM64_PAGEBASE_REL21: {
+      Kind = EdgeKind_coff_arm64::PageBase_Rel21;
       Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr);
+      break;
+    }
+    case COFF::RelocationTypesARM64::IMAGE_REL_ARM64_REL21: {
+      Kind = EdgeKind_coff_arm64::Rel21;
+      Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr);
+      break;
+    }
+    case COFF::RelocationTypesARM64::IMAGE_REL_ARM64_BRANCH19: {
+      Kind = EdgeKind_coff_arm64::Branch19;
+      Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr) >> 11;
+      break;
+    }
+    case COFF::RelocationTypesARM64::IMAGE_REL_ARM64_BRANCH14: {
+      Kind = EdgeKind_coff_arm64::Branch14;
+      Addend = *reinterpret_cast<const support::little32_t *>(FixupPtr) >> 16;
       break;
     }
     default: {
@@ -137,6 +158,7 @@ private:
 
     return Error::success();
   }
+#pragma optimize("", on)
 
 public:
   COFFLinkGraphBuilder_arm64(const object::COFFObjectFile &Obj, const Triple T,
@@ -160,11 +182,68 @@ public:
           E.setKind(aarch64::Pointer32);
           break;
         }
+        case EdgeKind_coff_arm64::Branch26: {
+          E.setKind(aarch64::Branch26PCRel);
+          break;
+        }
+        case EdgeKind_coff_arm64::PageBase_Rel21: {
+          E.setKind(aarch64::Page21);
+          break;
+        }
+        case EdgeKind_coff_arm64::Rel21: {
+          // TODO
+          break;
+        }
+        case EdgeKind_coff_arm64::PageOffset_12L: {
+          E.setKind(aarch64::PageOffset12);
+          break;
+        }
+        case EdgeKind_coff_arm64::Secrel: {
+          // TODO
+          break;
+        }
+        case EdgeKind_coff_arm64::Secrel_Low12A: {
+          // TODO
+          break;
+        }
+        case EdgeKind_coff_arm64::Secrel_High12A: {
+          // TODO
+          break;
+        }
+        case EdgeKind_coff_arm64::Secrel_Low12L: {
+          // TODO
+          break;
+        }
+        case EdgeKind_coff_arm64::Token: {
+          // TODO
+          break;
+        }
+        case EdgeKind_coff_arm64::Sec: {
+          // TODO
+          break;
+        }
+        case EdgeKind_coff_arm64::Pointer64: {
+          E.setKind(aarch64::Pointer64);
+          break;
+        }
+        case EdgeKind_coff_arm64::Branch19: {
+          E.setKind(aarch64::CondBranch19PCRel);
+          break;
+        }
+        case EdgeKind_coff_arm64::Branch14: {
+          E.setKind(aarch64::TestAndBranch14PCRel);
+          break;
+        }
+        case EdgeKind_coff_arm64::Rel32: {
+          // TODO
+          break;
+        }
         default:
           break;
         }
       }
     }
+
     return Error::success();
   }
 };
@@ -186,8 +265,38 @@ namespace jitlink {
 /// Return the string name of the given COFF ARM64 edge kind.
 const char *getCOFFARM64RelocationKindName(Edge::Kind R) {
   switch (R) {
+  case Pointer32:
+    return "Pointer32";
+  case Pointer32NB:
+    return "Pointer32NB";
   case Branch26:
     return "Branch26";
+  case PageBase_Rel21:
+    return "PageBase_Rel21";
+  case Rel21:
+    return "Rel21";
+  case PageOffset_12L:
+    return "PageOffset_12L";
+  case Secrel:
+    return "Secrel";
+  case Secrel_Low12A:
+    return "Secrel_Low12A";
+  case Secrel_High12A:
+    return "Secrel_High12A";
+  case Secrel_Low12L:
+    return "Secrel_Low12L";
+  case Token:
+    return "Token";
+  case Sec:
+    return "Section";
+  case Pointer64:
+    return "Pointer64";
+  case Branch19:
+    return "Branch19";
+  case Branch14:
+    return "Branch14";
+  case Rel32:
+    return "Rel32";
   default:
     return aarch64::getEdgeKindName(R);
   }
@@ -226,7 +335,9 @@ void link_COFF_arm64(std::unique_ptr<LinkGraph> G,
       Config.PrePrunePasses.push_back(markAllSymbolsLive);
 
     // Add COFF edge lowering passes.
-    // JITLinkContext *CtxPtr = Ctx.get();
+    JITLinkContext *CtxPtr = Ctx.get();
+    Config.PreFixupPasses.push_back(
+        [CtxPtr](LinkGraph &G) { return lowerEdges_COFF_arm64(G, CtxPtr); });
   }
 
   if (auto Err = Ctx->modifyPassConfig(*G, Config))
